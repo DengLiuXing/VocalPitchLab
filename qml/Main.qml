@@ -55,12 +55,33 @@ ApplicationWindow {
         onAccepted: backend.exportStem(selectedFile)
         onRejected: backend.discardStemExport()
     }
+    FileDialog {
+        id: midiDialog; objectName: "midiDialog"
+        title: qsTr("保存 MIDI"); fileMode: FileDialog.SaveFile
+        nameFilters: [qsTr("MIDI 文件 (*.mid)")]; defaultSuffix: "mid"
+        onAccepted: backend.exportMidi(selectedFile)
+    }
+    FileDialog {
+        id: ustxDialog; objectName: "ustxDialog"
+        title: qsTr("保存 UTAU 工程"); fileMode: FileDialog.SaveFile
+        nameFilters: [qsTr("OpenUtau 工程 (*.ustx)")]; defaultSuffix: "ustx"
+        onAccepted: backend.exportUstx(selectedFile)
+    }
     function saveStem(track) {
         if (stemDialog.visible) return
         const file = backend.prepareStemExport(track)
         if (file.toString().length) {
             stemDialog.selectedFile = file
             stemDialog.open()
+        }
+    }
+    function saveScore(kind) {
+        const dialog = kind === "midi" ? midiDialog : ustxDialog
+        if (dialog.visible) return
+        const file = backend.scoreExportPath(kind)
+        if (file.toString().length) {
+            dialog.selectedFile = file
+            dialog.open()
         }
     }
     Item {
@@ -288,6 +309,8 @@ ApplicationWindow {
                             primary: stemOptions.visible
                             onClicked: stemTracks = stemTracks.length ? [] : backend.stemExportOptions()
                         }
+                        AppButton { objectName: "exportMidiButton"; enabled: s.loaded; text: qsTr("导出 MIDI"); onClicked: win.saveScore("midi") }
+                        AppButton { objectName: "exportUstxButton"; enabled: s.loaded; text: qsTr("导出 UTAU 工程"); onClicked: win.saveScore("ustx") }
                         AppButton { objectName: "loopButton"; text: s.loop ? qsTr("循环中") : qsTr("循环"); primary: s.loop; onClicked: { if (!loopEditor) { backend.prepareLoop(); focusLoop() } loopEditor = !loopEditor } }
                         Item { Layout.fillWidth: true }
                         AppButton { objectName: "muteButton"; text: s.muted ? qsTr("静音") : qsTr("音量"); onClicked: backend.toggleMute() }

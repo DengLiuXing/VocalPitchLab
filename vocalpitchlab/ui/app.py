@@ -767,6 +767,33 @@ class Controller(QObject):
             export_notes(local_path(url),self.notes);self.feedback('音符列表已导出。')
         except Exception:self.feedback('导出失败，请选择可写入的文件位置。')
 
+    @Slot(str,result=QUrl)
+    def scoreExportPath(self,kind):
+        suffixes={'midi':'.mid','ustx':'.ustx'}
+        if not self.song or kind not in suffixes:return QUrl()
+        music = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.MusicLocation)
+        folder = Path(music) if music and Path(music).is_dir() else Path.home()
+        name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', self.song['name'])[:120].strip(' .')
+        return QUrl.fromLocalFile(str(folder / ((name or 'song') + suffixes[kind])))
+
+    @Slot(QUrl)
+    def exportMidi(self,url):self.export_score(url,'midi')
+
+    @Slot(QUrl)
+    def exportUstx(self,url):self.export_score(url,'ustx')
+
+    def export_score(self,url,kind):
+        # The dialog already picked a writable folder; no worker thread needed.
+        if not self.song or not self.series or not url.isLocalFile():return
+        try:
+            from vocalpitchlab.analysis.export_formats import to_midi, to_ustx
+            curve=self.series[self.primary];bpm=float(self.bpm or 120.)
+            target=Path(url.toLocalFile())
+            if kind=='midi':target.write_bytes(to_midi(self.notes,curve,bpm=bpm))
+            else:target.write_text(to_ustx(self.notes,curve,bpm=bpm,name=self.song['name']),encoding='utf-8')
+            self.feedback('乐谱已导出。')
+        except Exception:self.feedback('导出失败，请选择可写入的文件位置。')
+
     @Slot(result='QVariantList')
     def stemExportOptions(self):
         from vocalpitchlab.audio.stem_export import stem_sources
