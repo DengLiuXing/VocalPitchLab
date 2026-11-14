@@ -171,6 +171,18 @@ ENGLISH = {
     '当前安装包的 GPU 运行库不支持此显卡，请安装新版完整包': 'This GPU is unsupported by the installed runtime. Install a newer full package.',
     'GPU 自检时显存不足，暂用 CPU，请关闭占用显存的程序后重试': 'GPU memory ran out during the check. Close apps using the GPU and retry.',
     '显卡驱动版本过旧，请更新 NVIDIA 驱动后重试': 'Update your NVIDIA driver and retry.',
+    '节奏': 'Rhythm',
+    '拍号': 'Time signature',
+    '曲速': 'Tempo',
+    '%1 BPM · 估算': '%1 BPM · estimated',
+    '恢复自动': 'Use detected',
+    '自动 %1': 'Detected %1',
+    '曲速可在顶部控件组调整': 'Tempo is adjustable in the top control group.',
+    '正在更新节拍…': 'Updating tempo…',
+    '节拍已更新。': 'Tempo updated.',
+    '小节起点': 'Bar start',
+    '重新分析': 'Analyze again',
+    '正在重新分析': 'Analyzing again',
 }
 
 

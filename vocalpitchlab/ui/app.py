@@ -5,7 +5,7 @@ from vocalpitchlab.runtime.paths import APP_ROOT, DATA_ROOT, prepare, worker_pyt
 from vocalpitchlab.runtime.playback import configure_backend
 configure_backend(DATA_ROOT)
 from vocalpitchlab.ui.localization import LANGUAGES, LocalizedEngine, compute_status, localized
-from vocalpitchlab.ui.plot_support import PresentationClock, lod_stride, stable_envelope, vocal_loudness, melody_outline, vocal_gain
+from vocalpitchlab.ui.plot_support import PresentationClock, lod_stride, stable_envelope, vocal_loudness, melody_outline, vocal_gain, bar_phase, beat_period, grid_ticks
 from vocalpitchlab.ui.plot_layers import PlotLayers
 # Python paint callbacks must share the GUI thread; a threaded scene graph can
 # deadlock synchronous window grabs while the GUI thread holds Python's GIL.
@@ -71,7 +71,7 @@ class Controller(QObject):
             choices=sorted((DATA_ROOT/'results').glob('rmvpe-*/index.json')) if bootstrap else []
             self.data=json.loads(choices[-1].read_text(encoding='utf-8')) if choices else {'songs':[]}
         self.data.setdefault('jobs',[])
-        self.settings=dict(theme='system',hoverNotes=True,liveNotes=True,liveCurve=True,blocks=True,curve=True,volume=.65,pianoVolume=.65,pitchModel='tracked',noteMode='game',vocalSeparation=True,separationModel='mel_bs',compatiblePlayback=False,reduceLoad=False)
+        self.settings=dict(theme='system',hoverNotes=True,liveNotes=True,liveCurve=True,blocks=True,curve=True,volume=.65,pianoVolume=.65,pitchModel='tracked',noteMode='game',vocalSeparation=True,separationModel='mel_bs',compatiblePlayback=False,reduceLoad=False,beatsPerBar=4)
         self.settings.update(self.data.get('settings',{}));self.trash=[]
         if self.settings.get('language') not in LANGUAGES:
             self.settings['language'] = LANGUAGES[0]
@@ -97,6 +97,7 @@ class Controller(QObject):
         self.message_values = {}
         self.feedback_id = 0
         self.t=0.;self.span=20.;self.low=48.;self.high=72.;self.auto=False;self.show_curve=True;self.show_blocks=True
+        self.beat_times=None;self.beat_accent=None;self.bpm=None;self.auto_bpm=None;self.bpm_estimated=True;self.grid_phase=0
         self.source='vocals';self.window_index=0;self.loop=False;self.pending=None;self.resume=False;self.changing=False;self.revision=0;self.buffer_seek=None
         self.loop_a=0.;self.loop_b=10.;self.loop_initialized=False;self.muted=False
         self.show_blocks=self.settings['blocks'];self.show_curve=self.settings['curve']
@@ -123,7 +124,7 @@ class Controller(QObject):
         if signature!=getattr(self,'library_signature',None):
             self.library_signature=signature;self.libraryChanged.emit()
     def remember_view(self):
-        if self.song:self.song['view']=dict(position=self.t,span=self.span,low=self.low,high=self.high,source=self.source,detailSpan=getattr(self,'detail_span',20.))
+        if self.song:self.song['view']=dict(position=self.t,span=self.span,low=self.low,high=self.high,source=self.source,detailSpan=getattr(self,'detail_span',self.default_span()))
     def persist_view(self):
         if self.song:
             before=self.song.get('view');self.remember_view()
@@ -196,6 +197,8 @@ class Controller(QObject):
         return dict(loaded=bool(self.song),selected=self.selected,title=self.song['name'].replace('+-+',' · ') if self.song else self.text('你的歌声工作台'),
           duration=self.song['duration'] if self.song else 0,position=self.t,time=clock(self.t),total=clock(self.song['duration']) if self.song else '00:00',
           playing=self.player.playbackState()==QMediaPlayer.PlaybackState.PlayingState,autoRange=self.auto,span=self.span,low=self.low,high=self.high,
+          bpm=self.bpm or 0.,autoBpm=self.auto_bpm or 0.,bpmEstimated=self.bpm_estimated,
+          bpmOverridden=bool(self.song and 'bpm_override' in self.song),barOffset=int(self.song.get('bar_offset',0)) if self.song else 0,
           blocks=self.show_blocks,curve=self.show_curve,source=self.source,loop=self.loop,windowIndex=self.window_index,count=len(self.notes),pitch=playback['pitch'],
           mainNote=playback['mainNote'],message=message,feedbackId=self.feedback_id,settings=self.settings,
           availablePitchModels=[k for k,v in PITCH_MODES.items() if v in self.series],
@@ -320,6 +323,9 @@ class Controller(QObject):
             self.settings[key]=value
             if self.series:self.apply_pitch_model()
             self.save();self.changed.emit();return
+        if key=='beatsPerBar':
+            if int(value) not in (3,4,6):return
+            self.settings[key]=int(value);self.update_grid_phase();self.save();self.changed.emit();return
         if key=='theme' and value not in ['system','light','dark']:return
         self.settings[key]=value;self.show_blocks=self.settings['blocks'];self.show_curve=self.settings['curve'];self.save();self.changed.emit()
     @Slot(float)
@@ -430,6 +436,8 @@ class Controller(QObject):
         self.curve_reliability={};self.mode_notes={primary:notes};self.note_onsets=None
         self.game_notes_available=False;self.game_notes=[];self.game_mode_notes={};self.prepared_primary=None
         self.loudness=(np.array([0.]),np.array([.5]));refresh=False
+        # Stale beats would make default_span() read the previous song's tempo.
+        self.beat_times=None;self.beat_accent=None;self.bpm=None;self.auto_bpm=None;self.bpm_estimated=True;self.grid_phase=0
         try:
             self.install_presentation(song.get('presentation',{}))
         except (OSError,ValueError,KeyError,TypeError):
@@ -449,8 +457,8 @@ class Controller(QObject):
         self.data['last_song']=index;self.save();self.contentChanged.emit()
         self.message=''
         view=song.get('view',{})
-        self.span=float(np.clip(view.get('span',20),0,300));self.t=float(np.clip(view.get('position',0),0,song['duration']))
-        self.detail_span=self.clamp_span(view.get('detailSpan',self.span or 20))
+        self.span=float(np.clip(view.get('span',self.default_span()),0,300));self.t=float(np.clip(view.get('position',0),0,song['duration']))
+        self.detail_span=self.clamp_span(view.get('detailSpan',self.span or self.default_span()))
         if self.span:self.span=self.clamp_span(self.span)
         self.source=view.get('source','vocals') if view.get('source','vocals') in song['audio'] else 'vocals'
         self.fitRange()
@@ -471,6 +479,60 @@ class Controller(QObject):
         self.game_notes_available=value.get('game_available',False)
         self.game_mode_notes[primary]=notes
         self.vocal_boost=float(value.get('gain',1.))
+        self.install_beats(value)
+
+    def install_beats(self,value):
+        from vocalpitchlab.analysis.presentation_results import load_beats
+        times,accent,bpm=load_beats(value)
+        override=self.song.get('bpm_override') if self.song else None
+        self.beat_accent=accent
+        self.auto_bpm=float(bpm) if bpm else None
+        # A manual tempo wins and switches the grid to uniform spacing.
+        self.beat_times=None if override else times
+        self.bpm=float(override) if override else float(bpm or 120.)
+        self.bpm_estimated=not bool(override or bpm)
+        self.update_grid_phase()
+
+    def update_grid_phase(self):
+        bars=max(1,int(self.settings.get('beatsPerBar',4)))
+        offset=int(self.song.get('bar_offset',0)) if self.song else 0
+        self.grid_phase=(bar_phase(self.beat_accent,bars)+offset)%bars
+
+    def bar_seconds(self):
+        # Measure the real beat gap when available so barsVisible matches the
+        # lines actually drawn; the ACF tempo and the DP grid differ slightly.
+        period=beat_period(getattr(self,'beat_times',None),self.bpm)
+        return int(self.settings.get('beatsPerBar',4))*period if period>0 else 0.
+
+    def default_span(self):
+        seconds=self.bar_seconds()*4
+        return self.clamp_span(seconds) if seconds>0 else 20.
+
+    @Slot(float)
+    def setBpm(self,value):
+        if not self.song:return
+        bpm=float(np.clip(value,40.,240.))
+        if abs(bpm-float(self.bpm or 0.))<1e-6:return
+        self.song['bpm_override']=bpm
+        # Keep the manual tempo and the real beats from disagreeing on screen.
+        self.bpm=bpm;self.bpm_estimated=False;self.beat_times=None
+        self.update_grid_phase();self.save();self.changed.emit()
+
+    @Slot()
+    def resetBpm(self):
+        if not self.song or 'bpm_override' not in self.song:return
+        self.song.pop('bpm_override',None)
+        self.install_beats(self.song.get('presentation',{}))
+        self.save();self.changed.emit()
+
+    @Slot(int)
+    def shiftBarOffset(self,steps):
+        if not self.song:return
+        # Keep the raw offset so the panel shows -1, -2 rather than wrapping to 3.
+        offset=int(self.song.get('bar_offset',0))+int(steps)
+        if offset:self.song['bar_offset']=offset
+        else:self.song.pop('bar_offset',None)
+        self.update_grid_phase();self.save();self.changed.emit()
 
     def queue_presentation(self,song,native_curve):
         token=(song['song_id'],song['audio']['vocals'],native_curve)
@@ -482,6 +544,7 @@ class Controller(QObject):
     def start_presentation(self):
         if self.closing or self.presentation_process or not self.presentation_queue:return
         token,song=self.presentation_queue.pop(0);self.presentation_active=(token,song)
+        self.feedback('正在更新节拍…')
         folder=DATA_ROOT/'work'/'presentation-jobs';folder.mkdir(parents=True,exist_ok=True)
         job=uuid.uuid4().hex;source=folder/(job+'-input.json');target=folder/(job+'-result.json')
         write_json(source,song)
@@ -506,7 +569,7 @@ class Controller(QObject):
                     if self.song is song:
                         self.install_presentation(value);self.apply_pitch_model();self.apply_audio()
                     song['presentation']=value;song['main_notes']=value['notes']
-                    self.save()
+                    self.save();self.feedback('节拍已更新。')
                 except (OSError,ValueError,KeyError,TypeError):
                     if self.song is song:self.feedback('音符整理未完成，暂时显示原有结果。')
         elif not self.closing and self.song and self.song['song_id']==token[0]:
@@ -590,7 +653,7 @@ class Controller(QObject):
         center=float(np.clip((np.floor(low-2)+np.ceil(high+2))/2,width/2,127-width/2))
         self.auto=False;self.low=center-width/2;self.high=center+width/2;self.changed.emit()
     @Slot()
-    def toggleOverview(self):self.setSpan(getattr(self,'detail_span',20.) if self.span==0 else 0.)
+    def toggleOverview(self):self.setSpan(getattr(self,'detail_span',self.default_span()) if self.span==0 else 0.)
     @Slot(str,int)
     def adjustView(self,kind,steps):
         if not self.song:return
@@ -813,7 +876,9 @@ class Controller(QObject):
         versions[old.get('algorithm',{}).get('separation','htdemucs')]=snapshot(old)
         versions[song.get('algorithm',{}).get('separation','htdemucs')]=snapshot(song)
         current=self.song is old
-        new=dict(song,song_id=target_id,view=dict(old.get('view',{})),analysis_versions=versions)
+        # Analysis output carries rebuild itself; user choices must be carried by hand.
+        carried={k:old[k] for k in ('bpm_override','bar_offset') if old.get(k)}
+        new=dict(song,song_id=target_id,view=dict(old.get('view',{})),analysis_versions=versions,**carried)
         self.data['songs'][index]=new
         if current:
             loop_state=(self.loop,self.loop_a,self.loop_b,self.loop_initialized)
@@ -850,6 +915,39 @@ class Controller(QObject):
         self.data['jobs'].append(dict(id=uuid.uuid4().hex,source=str(source),target_id=target,
             separation=mode,state='queued',progress=0,message='等待重新分析'))
         self.save();self.contentChanged.emit();self.start_next();self.changed.emit()
+    @Slot(int)
+    def rebuildSong(self,index):
+        if not 0<=index<len(self.data['songs']):return
+        song=self.data['songs'][index];target=song.get('song_id')
+        if any(j.get('target_id')==target and j['state'] in ['running','queued'] for j in self.data['jobs']):
+            self.feedback('这首歌已在分析队列中。');return
+        source=Path(song.get('source',''))
+        if not source.is_file():source=Path(song['audio']['original'])
+        if not source.is_file():self.feedback('原音频已不存在，请重新导入。');return
+        # apply_song_separation short-circuits on a valid cache; a rebuild must not.
+        song['rebuild']=int(song.get('rebuild',0))+1
+        separation=(self.active_separation if self.song is song else None) or song.get('algorithm',{}).get('separation') or self.default_separation
+        self.data['jobs'].append(dict(id=uuid.uuid4().hex,source=str(source),target_id=target,separation=separation,
+            state='queued',progress=0,message='等待重新分析',rebuild=song['rebuild']))
+        self.save();self.contentChanged.emit();self.start_next();self.changed.emit()
+
+    def stage_entries(self,song):
+        """Every (stage, key) a song owns, including the presentation-side caches."""
+        if not song:return []
+        entries=[]
+        for bucket in (song.get('stage_cache',{}),song.get('presentation',{}).get('cache',{})):
+            for name,meta in bucket.items():
+                if isinstance(meta,dict) and meta.get('key'):entries.append((name,meta['key']))
+        return entries
+
+    def release_stale(self,entries):
+        from vocalpitchlab.analysis.analysis_cache import release
+        keep=set()
+        for other in self.data['songs']:
+            for candidate in [other,*other.get('analysis_versions',{}).values()]:
+                keep.update(key for _,key in self.stage_entries(candidate))
+        release(entries,keep)
+
     @Slot(str)
     def cancelQueued(self,key):
         job=next((j for j in self.data['jobs'] if j['id']==key and j['state']=='queued'),None)
@@ -884,9 +982,9 @@ class Controller(QObject):
             p.finished.connect(lambda code,*args,proc=p:self.worker_exited(proc,code))
             p.errorOccurred.connect(lambda e,proc=p:self.worker_exited(proc,-1) if e==QProcess.ProcessError.FailedToStart else None)
             if self.reusable_worker:p.start(worker_python(),['-u',str(ROOT/'main.py'),'--analysis-worker'])
-            else:p.start(worker_python(),['-u',str(self.worker),job['source'],'--standalone','--result-file',str(self.result_file),'--separation',job.get('separation','htdemucs')])
+            else:p.start(worker_python(),['-u',str(self.worker),job['source'],'--standalone','--result-file',str(self.result_file),'--separation',job.get('separation','htdemucs'),'--rebuild',str(job.get('rebuild',0))])
         if self.reusable_worker:
-            request=dict(id=job['id'],source=job['source'],result_file=str(self.result_file),separation=job.get('separation','htdemucs'))
+            request=dict(id=job['id'],source=job['source'],result_file=str(self.result_file),separation=job.get('separation','htdemucs'),rebuild=job.get('rebuild',0))
             self.process.write((json.dumps(request)+'\n').encode('utf-8'))
         self.contentChanged.emit();self.changed.emit()
 
@@ -928,7 +1026,9 @@ class Controller(QObject):
                 if job.get('target_id'):
                     target=next((s for s in self.data['songs'] if s.get('song_id')==job['target_id']),None)
                     if target:song['name']=target['name'];song['source']=target.get('source',job['source'])
+                    stale=self.stage_entries(target) if target else []
                     installed=self.install_analysis(song,job['target_id'])
+                    if installed and stale:self.release_stale(stale)
                     job.update(state='complete',message='分析完成，已保存' if installed else '歌曲已移除，未恢复到歌曲库',progress=100)
                 else:
                     song['song_id']=uuid.uuid4().hex;self.data['songs'].append(song);job.update(state='complete',message='分析完成，已保存',progress=100);self.selectSong(len(self.data['songs'])-1)
@@ -1184,11 +1284,14 @@ class PitchView(QQuickPaintedItem):
             step=max(1,math.ceil((b.high-b.low)*13/h))
             if (midi%step==0 or selected) and y0+8<=y(midi)<=y0+h-8:
                 p.setPen(QColor('#91c6ff' if dark else '#0069d2') if selected else QColor(muted));p.drawText(QRectF(3,y(midi)-9,50,18),Qt.AlignmentFlag.AlignRight|Qt.AlignmentFlag.AlignVCenter,note(midi))
-        # A fixed grid anchored to recording time, no variable edge labels.
-        raw=span/8;spacing=10**math.floor(math.log10(max(raw,.001)))
-        spacing*=next(v for v in [1,2,5,10] if v*spacing>=raw)
-        for tick in range(math.floor(left/spacing),math.ceil(right/spacing)+1):
-            p.setPen(QPen(QColor(grid),.5));p.drawLine(QPointF(x(tick*spacing),y0),QPointF(x(tick*spacing),y0+h))
+        # Same tick source as the tiled path, so both render identical lines.
+        beats=getattr(b,'beat_times',None);bpm=getattr(b,'bpm',None)
+        ticks,bars=grid_ticks(left,right,span,beats,beat_period(beats,bpm),
+                              getattr(b,'grid_phase',0),int(b.settings.get('beatsPerBar',4)),w)
+        bar_grid='#454a54' if dark else '#d6dbe3'
+        for tick,is_bar in zip(ticks,bars):
+            p.setPen(QPen(QColor(bar_grid if is_bar else grid),.5))
+            p.drawLine(QPointF(x(tick),y0),QPointF(x(tick),y0+h))
         p.restore();p.save();p.setClipRect(QRectF(x0,y0,w,h))
         if b.loop:p.fillRect(QRectF(x(b.loop_a),y0,x(b.loop_b)-x(b.loop_a),h),QColor('#124c97ff'))
         color=QColor(fg)

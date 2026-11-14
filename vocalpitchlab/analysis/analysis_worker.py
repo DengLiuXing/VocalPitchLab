@@ -19,7 +19,7 @@ def run_jobs():
             request=json.loads(line)
             job_id=request['id']
             separation=request.get('separation','mel_bs')
-            execute(request['source'],request['result_file'],True,separation)
+            execute(request['source'],request['result_file'],True,separation,request.get('rebuild',0))
         except (Exception,SystemExit):
             traceback.print_exc()
             print('VPL_JOB_DONE '+json.dumps(dict(id=job_id,code=1)),flush=True)

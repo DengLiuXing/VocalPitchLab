@@ -3,6 +3,7 @@ import contextlib
 import hashlib
 import json
 import os
+import shutil
 from pathlib import Path
 import time
 import tempfile
@@ -89,3 +90,23 @@ def stage(name, signature, producer):
         files = {k: dict(path=p.relative_to(folder).as_posix(), size=p.stat().st_size, sha256=digest_file(p)) for k, p in paths.items()}
         atomic_json(manifest, dict(signature=signature, seconds=seconds, files=files))
         return paths, dict(key=key, content={k:v['sha256'] for k,v in files.items()}, hit=False, seconds=round(seconds, 3))
+
+
+def release(entries, keep):
+    """Delete stage folders no other song references.
+
+    entries is [(stage_name, key), ...] taken from the replaced song's own
+    caches. Reclaiming is best effort: a failure must never break the caller.
+    """
+    root = (DATA_ROOT / 'results' / 'stages').resolve()
+    for name, key in entries:
+        if not name or not key or key in keep:
+            continue
+        folder = root / str(name) / str(key)
+        try:
+            if not folder.resolve().is_relative_to(root):
+                continue
+            if folder.is_dir():
+                shutil.rmtree(folder, ignore_errors=True)
+        except (OSError, ValueError):
+            continue

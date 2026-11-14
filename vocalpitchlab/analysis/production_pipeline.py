@@ -9,7 +9,7 @@ from vocalpitchlab.analysis.analysis_cache import stage, digest_file, atomic_jso
 SEPARATION_MODES = ('original', 'mel_roformer', 'bs_only', 'mel_bs', 'htdemucs')
 
 
-def analyze(source, separation='mel_bs', progress=None):
+def analyze(source, separation='mel_bs', progress=None, rebuild=0):
     from vocalpitchlab.analysis.pipeline_timing import Timeline
     timeline=Timeline()
     from vocalpitchlab.audio.audio_io import decode, track, write_track, separate as demucs
@@ -32,6 +32,9 @@ def analyze(source, separation='mel_bs', progress=None):
     metrics = {}
 
     def cached(name, signature, build):
+        # Only an explicit rebuild perturbs the signature; adding rebuild=0 would
+        # invalidate every cache written before this feature existed.
+        if rebuild:signature = dict(signature, rebuild=rebuild)
         with timeline.span(name):paths, meta = stage(name, signature, build)
         if name in ['vocals','lead']:
             import json
@@ -142,6 +145,7 @@ def analyze(source, separation='mel_bs', progress=None):
     with timeline.span('presentation'):song['presentation'] = prepare(song)
     song['main_notes'] = song['presentation']['notes']
     song['algorithm']['note_events'] = (VERSION if song.get('game_notes') else 'curve-fallback')+'+'+REFINEMENT_VERSION
+    if rebuild:song['rebuild'] = rebuild
     song['stage_cache'] = metrics
     if device == 'cuda':
         metrics['cuda_peak_allocated_mib'] = torch.cuda.max_memory_allocated()/2**20

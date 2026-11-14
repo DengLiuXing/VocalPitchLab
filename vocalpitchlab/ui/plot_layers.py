@@ -8,6 +8,7 @@ from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen
 from PySide6.QtQuick import QQuickItem, QSGSimpleTextureNode, QSGTexture
 
 from vocalpitchlab.ui.localization import localized
+from vocalpitchlab.ui.plot_support import beat_period, grid_ticks
 
 
 class RasterLayer(QQuickItem):
@@ -307,15 +308,21 @@ class PlotLayers:
 
     def _sync_grid(self,left,right,key):
         b = self.owner._controller
-        raw = self.span/8;spacing = 10**math.floor(math.log10(max(raw,.001)))
-        spacing *= next(v for v in [1,2,5,10] if v*spacing >= raw)
-        ticks = range(math.floor(left/spacing),math.ceil(right/spacing)+1)
-        color = '#2b2e34' if b.dark else '#edf0f3'
-        for i,tick in enumerate(ticks):
-            self._part(f'grid-{i}',(color,self.h,self.dpr),lambda:self._line_image(color,.5,self.h),
-                       x=(tick*spacing-left)*self.scale-1.5).setZ(0)
+        beats = getattr(b,'beat_times',None);bpm = getattr(b,'bpm',None)
+        times,is_bar = grid_ticks(left,right,self.span,beats,beat_period(beats,bpm),
+                                  getattr(b,'grid_phase',0),int(b.settings.get('beatsPerBar',4)),self.w)
+        beat_color = '#2b2e34' if b.dark else '#edf0f3'
+        bar_color = '#454a54' if b.dark else '#d6dbe3'
+        used = 0
+        for tick,bar in zip(times,is_bar):
+            color = bar_color if bar else beat_color
+            # Slots are reused; naming by beat index would grow without bound.
+            self._part(f'grid-{used}',(bool(bar),color,self.h,self.dpr),
+                       lambda color=color:self._line_image(color,.5,self.h),
+                       x=(tick-left)*self.scale-1.5).setZ(0)
+            used += 1
         for name,entry in self.parts.items():
-            if name.startswith('grid-') and int(name[5:]) >= len(ticks):entry[-1].setVisible(False)
+            if name.startswith('grid-') and int(name[5:])>=used:entry[-1].setVisible(False)
 
     def _sync_loop(self,b,left,key):
         if not b.loop:

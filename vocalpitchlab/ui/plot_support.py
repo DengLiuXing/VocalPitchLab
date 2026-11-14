@@ -3,9 +3,67 @@ import math
 from functools import lru_cache
 import numpy as np
 
+GRID_MIN_PIXELS=4.
+# Only a near-tied score is resolved toward the earlier phase; 0.9 pulled every
+# candidate back to 0 because all four beats carry some onset energy.
+TIE_MARGIN=.95
+
+
 def lod_stride(span,pixels,frame_seconds):
     ratio=max(1,span/max(1,pixels)/max(frame_seconds,1e-6)/2)
     return 2**max(0,math.floor(math.log2(ratio)))
+
+
+def beat_period(beats,bpm):
+    """Median gap when real beats exist, otherwise the tempo period."""
+    if beats is not None and len(beats)>=2:
+        gap=float(np.median(np.diff(np.asarray(beats,float))))
+        if np.isfinite(gap) and gap>0:return gap
+    if bpm and bpm>0:return 60./float(bpm)
+    return 0.
+
+
+def bar_phase(accent,beats_per_bar):
+    """Which beat class carries the downbeat; ties resolve to the earliest.
+
+    Kick and bass sit on beats 1 and 3 alike, so a near-tie is expected and
+    preferring the earlier phase keeps the grid stable across replays.
+    """
+    bars=max(1,int(beats_per_bar))
+    if accent is None or len(accent)<bars:return 0
+    values=np.asarray(accent,float)
+    scores=[float(values[p::bars].sum()) for p in range(bars)]
+    best=max(scores)
+    if not np.isfinite(best) or best<=0:return 0
+    for p,score in enumerate(scores):
+        if score>=best*TIE_MARGIN:return p
+    return int(np.argmax(scores))
+
+
+def grid_ticks(left,right,span,beats,period,phase,beats_per_bar,pixels):
+    """Beat ticks inside the viewport as (times, is-bar flags).
+
+    Thins to bar lines and then to nothing as the pixel spacing collapses;
+    without that a 300 s view at 120 BPM would emit 600 raster layers.
+    """
+    period=float(period or 0.)
+    if span<=0 or pixels<=0 or period<=0:return np.zeros(0),np.zeros(0,bool)
+    bars=max(1,int(beats_per_bar))
+    source=None if beats is None else np.asarray(beats,float)
+    if source is not None and source.size>=2:
+        times=source;index=np.arange(source.size)
+    else:
+        origin=float(source[0]) if source is not None and source.size else 0.
+        index=np.arange(math.floor((left-origin)/period)-1,math.ceil((right-origin)/period)+2)
+        times=origin+index*period
+    visible=(times>=left-period)&(times<=right+period)
+    times=times[visible];index=index[visible]
+    if not times.size:return np.zeros(0),np.zeros(0,bool)
+    is_bar=(index-int(phase))%bars==0
+    if period/span*pixels<GRID_MIN_PIXELS:
+        if bars*period/span*pixels<GRID_MIN_PIXELS:return np.zeros(0),np.zeros(0,bool)
+        times=times[is_bar];is_bar=np.ones(times.size,bool)
+    return times,is_bar
 
 def stable_envelope(times,values,stride):
     """Buckets are anchored to the recording, never the moving viewport.

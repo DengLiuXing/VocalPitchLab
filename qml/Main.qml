@@ -173,7 +173,7 @@ ApplicationWindow {
                 Text { text: s.loaded ? s.title : qsTr("歌曲库"); color: Theme.text; font.pixelSize: 27; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
                 Rectangle {
                     objectName: "viewControlsPanel"
-                    Layout.preferredWidth: 340; implicitHeight: 82; radius: 15
+                    Layout.preferredWidth: 452; implicitHeight: 82; radius: 15
                     gradient: Gradient {
                         GradientStop { position: 0; color: Theme.dark ? "#ed303238" : "#faffffff" }
                         GradientStop { position: 1; color: Theme.dark ? "#ed26282d" : "#eaf7f8fa" }
@@ -188,6 +188,8 @@ ApplicationWindow {
                         ViewControl { objectName: "pitchWidthControl"; enabled: s.loaded; label: qsTr("音域跨度"); valueText: Math.abs((s.high-s.low)%12)<.001 ? qsTr("%1 八度").arg(Math.round((s.high-s.low)/12)) : qsTr("%1 半音").arg(Number((s.high-s.low).toFixed(1))); onAdjusted: function(steps) { backend.adjustView("width",steps) } }
                             Rectangle { implicitWidth: 1; implicitHeight: 24; color: Theme.line }
                         ViewControl { objectName: "pitchCenterControl"; enabled: s.loaded; label: qsTr("音域中心"); valueText: win.pitchLabel((s.low+s.high)/2); onAdjusted: function(steps) { backend.adjustView("center",steps) } }
+                            Rectangle { implicitWidth: 1; implicitHeight: 24; color: Theme.line }
+                        ViewControl { objectName: "tempoControl"; enabled: s.loaded; label: qsTr("曲速"); valueText: s.bpm > 0 ? (s.bpmEstimated ? qsTr("%1 BPM · 估算").arg(Number(s.bpm.toFixed(1))) : qsTr("%1 BPM").arg(Number(s.bpm.toFixed(1)))) : "—"; onAdjusted: function(steps) { backend.setBpm(s.bpm + steps) } }
                         }
                         RowLayout {
                             Layout.fillWidth: true; Layout.leftMargin: 6; Layout.rightMargin: 8
@@ -424,6 +426,28 @@ ApplicationWindow {
                 }
             }
             Rectangle {
+                objectName: "rhythmCard"; Layout.fillWidth: true; implicitHeight: rhythmContent.implicitHeight + 28; radius: 16; color: Theme.control
+                ColumnLayout { id: rhythmContent; anchors.fill: parent; anchors.margins: 14; spacing: 10
+                    Text { text: qsTr("节奏"); color: Theme.muted; font.pixelSize: 11 }
+                    RowLayout { spacing: 5; Layout.fillWidth: true
+                        Repeater { model: [{label:"4/4",key:4},{label:"3/4",key:3},{label:"6/8",key:6}]
+                            delegate: AppButton { required property var modelData; Layout.fillWidth: true; text: modelData.label; primary: s.settings.beatsPerBar === modelData.key; onClicked: backend.setting("beatsPerBar",modelData.key) }
+                        }
+                    }
+                    Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: Theme.line }
+                    RowLayout { Layout.fillWidth: true
+                        Text { text: qsTr("曲速可在顶部控件组调整"); color: Theme.muted; font.pixelSize: 11; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+                        AppButton { objectName: "resetTempo"; text: qsTr("恢复自动"); enabled: s.loaded && s.bpmOverridden; onClicked: backend.resetBpm() }
+                    }
+                    RowLayout { Layout.fillWidth: true
+                        Text { text: qsTr("小节起点"); color: Theme.text; font.pixelSize: 13; Layout.fillWidth: true }
+                        AppButton { objectName: "barOffsetMinus"; text: "−1"; enabled: s.loaded; onClicked: backend.shiftBarOffset(-1) }
+                        Text { text: s.barOffset; color: Theme.muted; font.pixelSize: 12; Layout.preferredWidth: 22; horizontalAlignment: Text.AlignHCenter }
+                        AppButton { objectName: "barOffsetPlus"; text: "+1"; enabled: s.loaded; onClicked: backend.shiftBarOffset(1) }
+                    }
+                }
+            }
+            Rectangle {
                 objectName: "pitchHintsCard"; Layout.fillWidth: true; implicitHeight: pitchHintsContent.implicitHeight + 32; radius: 16; color: Theme.control
                 ColumnLayout { id: pitchHintsContent; anchors.fill: parent; anchors.margins: 16; spacing: 0
                     Text { text: qsTr("功能选项"); color: Theme.muted; font.pixelSize: 11 }
@@ -469,6 +493,7 @@ ApplicationWindow {
         id: songContext; objectName: "songContext"; property int targetIndex: -1; popupType: Popup.Item; width: 180; padding: 6
         background: Rectangle { radius: 12; color: Theme.panel; border.color: Theme.line }
         MenuItem { objectName: "removeSongAction"; text: qsTr("从歌曲库移除"); onTriggered: backend.deleteSongs([songContext.targetIndex]); contentItem: Text { text: parent.text; color: Theme.dark ? "#ff9d9d" : "#bc3445"; font.pixelSize: 13; verticalAlignment: Text.AlignVCenter } background: Rectangle { radius: 7; color: parent.highlighted ? Theme.hover : "transparent" } }
+        MenuItem { objectName: "reanalyzeSongAction"; text: qsTr("重新分析"); onTriggered: backend.rebuildSong(songContext.targetIndex); contentItem: Text { text: parent.text; color: Theme.text; font.pixelSize: 13; verticalAlignment: Text.AlignVCenter } background: Rectangle { radius: 7; color: parent.highlighted ? Theme.hover : "transparent" } }
         MenuItem { text: qsTr("批量管理"); onTriggered: { managing=true; selectedSongs=[songContext.targetIndex] } contentItem: Text { text: parent.text; color: Theme.text; font.pixelSize: 13; verticalAlignment: Text.AlignVCenter } background: Rectangle { radius: 7; color: parent.highlighted ? Theme.hover : "transparent" } }
     }
     Connections { target: backend; function onContentChanged() { selectedSongs=[]; stemTracks=[]; Qt.callLater(function() { if (s.loaded) focusLoop() }) } }

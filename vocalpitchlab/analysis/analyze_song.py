@@ -7,12 +7,12 @@ from vocalpitchlab.runtime.paths import DATA_ROOT, prepare
 from vocalpitchlab.analysis.analysis_cache import atomic_json
 
 
-def execute(file,result_file=None,standalone=True,separation='mel_bs'):
+def execute(file,result_file=None,standalone=True,separation='mel_bs',rebuild=0):
     prepare()
     def progress(value, message):
         print('VPL_EVENT '+json.dumps(dict(progress=value, message=message), ensure_ascii=False), flush=True)
     from vocalpitchlab.analysis.production_pipeline import analyze
-    song = analyze(Path(file), separation, progress)
+    song = analyze(Path(file), separation, progress, rebuild)
     previous = sorted((DATA_ROOT/'results').glob('rmvpe-*/index.json'))
     old = json.loads(previous[-1].read_text(encoding='utf-8')) if previous and not standalone else dict(songs=[])
     prefix = 'analysis-' if standalone else 'rmvpe-'
@@ -33,8 +33,9 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument('file'); p.add_argument('--result-file'); p.add_argument('--standalone', action='store_true')
     p.add_argument('--separation', choices=SEPARATION_MODES, default='mel_bs')
+    p.add_argument('--rebuild', type=int, default=0)
     args = p.parse_args()
-    execute(args.file,args.result_file,args.standalone,args.separation)
+    execute(args.file,args.result_file,args.standalone,args.separation,args.rebuild)
 
 
 if __name__ == '__main__':

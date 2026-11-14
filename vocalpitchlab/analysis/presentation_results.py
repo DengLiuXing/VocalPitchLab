@@ -4,8 +4,9 @@ import json
 from pathlib import Path
 import numpy as np
 from vocalpitchlab.analysis.analysis_cache import stage, digest_file, atomic_json
+from vocalpitchlab.analysis.beat_grid import BEATS_VERSION
 
-PRESENTATION_VERSION = 'presentation-v1'
+PRESENTATION_VERSION = 'presentation-v2'
 
 
 def read_curve(path):
@@ -31,6 +32,23 @@ def prepare(song):
     signature = dict(version=PRESENTATION_VERSION, refinement=REFINEMENT_VERSION, evidence=evidence_version, display=display_version,
                      curves=signatures, game=digest_file(raw) if has_game else None,
                      fallback=current_settings() if not has_game else None, duration=song['duration'], settings=RECONCILE_SETTINGS)
+
+    original = Path(song['audio']['original'])
+    beats_signature = dict(version=BEATS_VERSION, audio=digest_file(original), duration=round(float(song['duration']), 4))
+    if song.get('rebuild'):
+        beats_signature['rebuild'] = song['rebuild']
+
+    def beats(folder):
+        from vocalpitchlab.analysis.beat_grid import detect
+        result = detect(original, song['duration'])
+        np.savez_compressed(folder/'beats.npz', time=np.zeros(0, float) if result is None else result['time'],
+                            accent=np.zeros(0, float) if result is None else result['accent'])
+        atomic_json(folder/'tempo.json', dict(version=BEATS_VERSION, bpm=0. if result is None else result['bpm']))
+        return dict(beats=folder/'beats.npz', tempo=folder/'tempo.json')
+
+    # Cascade on the beats key so a BEATS_VERSION bump cannot be swallowed here.
+    beat_paths, beat_meta = stage('beats', beats_signature, beats)
+    signature['beats'] = beat_meta['key']
 
     def build(folder):
         times, midi, _ = read_curve(curves[key])
@@ -76,7 +94,8 @@ def prepare(song):
                 settings=RECONCILE_SETTINGS, fallback_settings=current_settings() if not has_game else None,
                 primary=key, notes=str(paths['notes']), evidence=str(paths['evidence']), loudness=str(levels['loudness']),
                 gain=json.loads(levels['gain'].read_text(encoding='utf-8'))['gain'],
-                game_available=has_game, cache=dict(presentation=meta, loudness=loud_meta))
+                beats=dict(beats=str(beat_paths['beats']), tempo=str(beat_paths['tempo'])),
+                game_available=has_game, cache=dict(beats=beat_meta, presentation=meta, loudness=loud_meta))
 
 
 def load(value):
@@ -100,6 +119,29 @@ def load(value):
     if not all(a['end']<=b['start']+1e-7 for a,b in zip(notes,notes[1:])):
         raise ValueError('Overlapping presentation notes')
     return notes, evidence, loudness
+
+
+def load_beats(value):
+    """Beat arrays bypass load() so its three-way contract stays untouched.
+
+    A cached failure stores an empty array and bpm=0; that reads back as
+    "no beat grid", never as an exception.
+    """
+    cache = (value or {}).get('beats')
+    if not cache:
+        return None, None, None
+    try:
+        with np.load(cache['beats'], allow_pickle=False) as d:
+            time = np.asarray(d['time'], float)
+            accent = np.asarray(d['accent'], float)
+        bpm = float(json.loads(Path(cache['tempo']).read_text(encoding='utf-8'))['bpm'])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None, None, None
+    if not time.size or time.ndim != 1 or accent.shape != time.shape or bpm <= 0:
+        return None, None, None
+    if not np.isfinite(time).all() or not np.isfinite(accent).all() or np.any(np.diff(time) <= 0):
+        return None, None, None
+    return time, accent, bpm
 
 
 if __name__ == '__main__':
